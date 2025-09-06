@@ -119,9 +119,15 @@ jobs:
         run: ./gradlew assembleRelease
         working-directory: ./android
 
+      - name: Rename APK for direct download # 新增步骤：直接重命名APK文件
+        run: |
+          mv ./android/app/build/outputs/apk/release/app-release.apk ./android/app/build/outputs/apk/release/cherry-studio-app${{ github.run_number }}.apk
+
       - name: Upload Android Artifact # 步骤11: 上传构建好的APK文件
         uses: actions/upload-artifact@v4
         with:
-          name: android-release-apk
-          path: ./android/app/build/outputs/apk/release/app-release.apk
+          name: cherry-studio-app${{ github.run_number }}.apk # Artifact 名称就是最终文件名称
+          path: ./android/app/build/outputs/apk/release/cherry-studio-app${{ github.run_number }}.apk # 上传重命名后的APK文件
+
+
 
