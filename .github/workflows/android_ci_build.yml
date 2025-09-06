@@ -79,55 +79,92 @@ jobs:
         # 如果经常有冲突，考虑改为创建Pull Request的逻辑。
 
   build_android:
-    needs: merge_upstream # 确保在合并上游仓库之后才进行构建
+    needs: merge_upstream
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repository # 步骤1: 检出代码
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up Node.js # 步骤2: 设置Node.js环境
+      - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
           node-version: '18'
 
-      - name: Enable Corepack # 启用 Corepack
+      - name: Enable Corepack
         run: corepack enable
 
-      - name: Install dependencies # 步骤3: 安装项目依赖
+      - name: Install dependencies
         run: yarn install
 
-      - name: Generate database # 步骤4: 生成数据库
+      - name: Generate database
         run: npx drizzle-kit generate
 
       - name: Install Expo CLI
         run: npm install -g expo-cli
 
-      - name: Generate Android native project files # 步骤6: 生成Android原生项目文件
+      - name: Generate Android native project files # 这一步会生成 build.gradle
         run: npx expo prebuild --platform android --no-install
+        # 如果需要，可以将 `--no-install` 移除，让prebuild自动安装原生依赖，但通常在CI中不需要
 
-      - name: Set up Java # 步骤7: 设置Java环境，用于Gradle构建
+      - name: Modify android/app/build.gradle for ABI splits # 新增步骤：修改 build.gradle
+        run: |
+          # 确保文件存在
+          if [ ! -f ./android/app/build.gradle ]; then
+            echo "Error: android/app/build.gradle not found after expo prebuild!"
+            exit 1
+          fi
+
+          echo "Adding ABI splits configuration to android/app/build.gradle..."
+          sed -i '/apply from: "../../node_modules/expo-router/expo-router-app.gradle"/a\
+              \
+              splits {\
+                  abi {\
+                      enable true\
+                      reset()\
+                      # 对于大多数现代安卓设备，主要关注 arm64-v8a 和 armeabi-v7a\
+                      # 如果也需要支持模拟器或特定旧设备，可以添加x86, x86_64\
+                      include "armeabi-v7a", "arm64-v8a", "x86", "x86_64"\
+                      # universalApk true // 如果需要一个包含所有ABI的通用APK，取消注释\
+                  }\
+              }' ./android/app/build.gradle
+
+          # 也可以在 defaultConfig 中添加 ndk.abiFilters 如果之前没有明确指定
+          # Expo prebuild 可能会自动添加，但为了确保，可以再添加一个sed命令
+          # sed -i '/^    defaultConfig {/a\
+          #         ndk {\
+          #             abiFilters "armeabi-v7a", "arm64-v8a", "x86", "x86_64"\
+          #         }' ./android/app/build.gradle
+
+
+          echo "Modified android/app/build.gradle content:"
+          cat ./android/app/build.gradle # 打印修改后的文件内容进行调试
+
+        working-directory: . # 确保在正确的工作目录执行
+
+      - name: Set up Java
         uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
           java-version: '17'
 
-      - name: Set up Gradle # 步骤8: 设置Gradle环境
+      - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v3
+        # Gradle的 setup-gradle action 可能会缓存 .gradle 文件夹，
+        # 如果 prebuild 导致某些gradle配置改变，可能需要注意缓存失效问题
+        # 通常这里不会有问题
 
-      - name: Build Android Release App Locally # 步骤10: 执行安卓本地构建（release）
+      - name: Build Android Release Apps for Multiple ABIs (using splits)
         run: ./gradlew assembleRelease
         working-directory: ./android
 
-      - name: Rename APK for direct download # 新增步骤：直接重命名APK文件
-        run: |
-          mv ./android/app/build/outputs/apk/release/app-release.apk ./android/app/build/outputs/apk/release/cherry-studio-app${{ github.run_number }}.apk
+      - name: List generated APKs (Debug step)
+        run: ls -lh ./android/app/build/outputs/apk/release/
 
-      - name: Upload Android Artifact # 步骤11: 上传构建好的APK文件
+      - name: Collect and Upload Android ABI Split APKs
         uses: actions/upload-artifact@v4
         with:
-          name: cherry-studio-app${{ github.run_number }}.apk # Artifact 名称就是最终文件名称
-          path: ./android/app/build/outputs/apk/release/cherry-studio-app${{ github.run_number }}.apk # 上传重命名后的APK文件
-
-
-
+          # 使用 github.run_started_at 获取当前工作流运行的开始时间
+          # 并格式化为 ISO 8601 字符串，替换掉冒号
+          name: cherry-studio-app-apks-${{ format('{0:yyyyMMddTHHmmssZ}', github.run_started_at) }}
+          path: ./android/app/build/outputs/apk/release/*.apk
