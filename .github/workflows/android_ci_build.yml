@@ -1,0 +1,127 @@
+name: Android CI Build & Upstream Merge
+
+on:
+  schedule:
+    # 每周一凌晨2点触发（UTC时间）。你可以根据需要调整这个 cron 表达式。
+    # 例如：'0 2 * * MON' 表示每周一2点。
+    # '0 2 * * *' 表示每天2点。
+    - cron: '0 2 * * MON'
+  workflow_dispatch: # 允许手动从GitHub UI触发此工作流
+
+jobs:
+  merge_upstream:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0 
+
+      - name: Set Git user
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Add upstream remote
+        run: |
+          # 确保如果remote已经存在，不会报错
+          git remote add upstream https://github.com/CherryHQ/cherry-studio-app.git || git remote set-url upstream https://github.com/CherryHQ/cherry-studio-app.git
+
+      - name: Fetch upstream
+        run: git fetch upstream
+
+      - name: Rebase upstream into main branch
+        id: merge_step
+        run: |
+          git checkout main
+          # 设置pull默认使用rebase策略，保持提交历史线性
+          git config pull.rebase true
+
+          # 尝试从upstream/main拉取并rebase到本地main
+          # `|| { echo "::error::Rebase failed!"; exit 1; }` 用于在rebase失败时明确报错并停止步骤
+          set +e # 临时禁用bash的errexit，以便我们可以检查git pull的返回值
+          git pull upstream main --autostash 
+          PULL_STATUS=$?
+          set -e # 重新启用errexit
+
+          if [ $PULL_STATUS -eq 0 ]; then
+            echo "Pull successful, checking if main branch was updated..."
+            # 比较当前HEAD和上游main分支的HEAD，如果不同，说明有新的提交被引入
+            # (注意：rebase之后，如果上游有新提交，即使内容没有改变，HEAD也会变)
+            LOCAL_MAIN_SHA=$(git rev-parse HEAD)
+            UPSTREAM_MAIN_SHA=$(git rev-parse upstream/main)
+
+            if [ "$LOCAL_MAIN_SHA" != "$UPSTREAM_MAIN_SHA" ]; then
+                echo "Repository updated after rebase."
+                echo "::set-output name=merged::true"
+            else
+                echo "No new commits from upstream, or fast-forwarded without new content."
+                echo "::set-output name=merged::false"
+            fi
+          else
+            echo "##[error]Failed to pull and rebase upstream/main into main. Manual intervention may be required."
+            echo "::set-output name=merged::false"
+            exit 1 # Rebase失败时直接终止任务
+          fi
+        # continue-on-error: false # Rebase失败时通常不应该继续。
+
+      - name: Push merged changes to main (if merge was successful and there were changes)
+        if: steps.merge_step.outputs.merged == 'true'
+        run: |
+            # 使用 --force-with-lease 避免覆盖其他人的并行更新
+            git push origin main --force-with-lease
+            echo "Successfully pushed rebased changes to main."
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        # 如果需要处理合并冲突，此部分需要更复杂的逻辑，例如创建PR而不是直接推送。
+        # 为了简单起见，这里假设合并通常不需要手动干预。
+        # 如果经常有冲突，考虑改为创建Pull Request的逻辑。
+
+  build_android:
+    needs: merge_upstream # 确保在合并上游仓库之后才进行构建
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository # 步骤1: 检出代码
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js # 步骤2: 设置Node.js环境
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+
+      - name: Enable Corepack # 启用 Corepack
+        run: corepack enable
+
+      - name: Install dependencies # 步骤3: 安装项目依赖
+        run: yarn install
+
+      - name: Generate database # 步骤4: 生成数据库
+        run: npx drizzle-kit generate
+
+      - name: Install Expo CLI
+        run: npm install -g expo-cli
+
+      - name: Generate Android native project files # 步骤6: 生成Android原生项目文件
+        run: npx expo prebuild --platform android --no-install
+
+      - name: Set up Java # 步骤7: 设置Java环境，用于Gradle构建
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Set up Gradle # 步骤8: 设置Gradle环境
+        uses: gradle/actions/setup-gradle@v3
+
+      - name: Build Android Release App Locally # 步骤10: 执行安卓本地构建（release）
+        run: ./gradlew assembleRelease
+        working-directory: ./android
+
+      - name: Upload Android Artifact # 步骤11: 上传构建好的APK文件
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-release-apk
+          path: ./android/app/build/outputs/apk/release/app-release.apk
+
