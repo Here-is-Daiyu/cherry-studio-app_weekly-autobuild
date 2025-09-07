@@ -11,14 +11,16 @@ fi
 echo "Adding ABI splits configuration to $BUILD_GRADLE_PATH..."
 
 # 使用 awk 来实现插入，比 sed 在多行插入时更易读和健壮
-awk '/apply from: "../../node_modules/expo-router/expo-router-app.gradle"/ {
+# 注意：整个 awk 脚本块现在用单引号 ' 包裹，内部的字符串用双引号 "
+awk '
+/apply from: "../../node_modules/expo-router/expo-router-app.gradle"/ {
     print; # 打印匹配到的行
     print ""; # 插入一个空行
     print "    splits {";
     print "        abi {";
     print "            enable true";
     print "            reset()";
-    print "            include \"armeabi-v7a\", \"arm64-v8a\", \"x86\", \"x86_64\"";
+    print "            include \"armeabi-v7a\", \"arm64-v8a\", \"x86\", \"x86_64\""; # 注意这里的双引号需要转义
     print "        }";
     print "    }";
     next; # 处理完这一行后跳到下一行
