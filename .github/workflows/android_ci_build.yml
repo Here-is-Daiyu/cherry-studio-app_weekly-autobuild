@@ -107,58 +107,12 @@ jobs:
         run: npx expo prebuild --platform android --no-install
         # 如果需要，可以将 `--no-install` 移除，让prebuild自动安装原生依赖，但通常在CI中不需要
 
-      - name: Modify android/app/build.gradle for ABI splits
-        run: |
-          if [ ! -f ./android/app/build.gradle ]; then
-            echo "Error: android/app/build.gradle not found after expo prebuild!"
-            exit 1
-          fi
 
-          echo "Adding ABI splits configuration to android/app/build.gradle..."
+      - name: Run script to add ABI splits # 执行脚本步骤
+        run: ./scripts/add_abi_splits.sh
+        working-directory: . # 确保脚本能在正确的工作目录找到文件
 
-          # 创建一个临时文件来存储要插入的文本
-          insert_text=$(cat <<EOF
-    splits {
-        abi {
-            enable true
-            reset()
-            # 对于大多数现代安卓设备，主要关注 arm64-v8a 和 armeabi-v7a
-            # 如果也需要支持模拟器或特定旧设备，可以添加x86, x86_64
-            include "armeabi-v7a", "arm64-v8a", "x86", "x86_64"
-             universalApk true // 如果需要一个包含所有ABI的通用APK，取消注释
-        }
-    }
-EOF
-          )
-
-          # 使用 sed 的替换功能替换一个占位符，或者插入到特定行
-          # 这种方法更灵活，可以避免a\的转义问题
-          # 我们先将需要插入的文本存储到一个临时变量中
-          TEMP_FILE_CONTENT="$(mktemp)"
-          cat > "$TEMP_FILE_CONTENT" <<'EOF_INSERT'
-
-    splits {
-        abi {
-            enable true
-            reset()
-            # 对于大多数现代安卓设备，主要关注 arm64-v8a 和 armeabi-v7a
-            # 如果也需要支持模拟器或特定旧设备，可以添加x86, x86_64
-            include "armeabi-v7a", "arm64-v8a", "x86", "x86_64"
-            # universalApk true // 如果需要一个包含所有ABI的通用APK，取消注释
-        }
-    }
-EOF_INSERT
-
-          # 找到匹配行，并在其后读取并插入TEMP_FILE_CONTENT的内容
-          sed -i "/apply from: \"../../node_modules/expo-router/expo-router-app.gradle\"/r $TEMP_FILE_CONTENT" ./android/app/build.gradle
-          rm "$TEMP_FILE_CONTENT" # 删除临时文件
-
-          echo "Modified android/app/build.gradle content:"
-          cat ./android/app/build.gradle
-        working-directory: .
-
-
-
+        
       - name: Set up Java
         uses: actions/setup-java@v4
         with:
