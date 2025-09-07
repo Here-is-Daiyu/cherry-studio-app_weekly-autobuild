@@ -108,10 +108,11 @@ jobs:
         # 如果需要，可以将 `--no-install` 移除，让prebuild自动安装原生依赖，但通常在CI中不需要
 
 
-      - name: Run script to add ABI splits # 执行脚本步骤
-        run: ./scripts/add_abi_splits.sh
-        working-directory: . # 确保脚本能在正确的工作目录找到文件
-
+      - name: Make script executable and run it # 新增步骤，或者合并
+        run: |
+          chmod +x ./scripts/add_abi_splits.sh
+          ./scripts/add_abi_splits.sh
+        working-directory: .
         
       - name: Set up Java
         uses: actions/setup-java@v4
