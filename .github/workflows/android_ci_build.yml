@@ -133,10 +133,16 @@ jobs:
       - name: List generated APKs (Debug step)
         run: ls -lh ./android/app/build/outputs/apk/release/
 
+      - name: Generate unique timestamp for artifact name
+        id: generate_timestamp # 添加一个 id 以便在后续步骤中引用
+        run: echo "ARTIFACT_TIMESTAMP=$(date -u +'%Y%m%dT%H%M%S%Z')" >> $GITHUB_ENV
+        # date -u 表示 UTC 时间
+        # %Y%m%dT%H%M%S%Z 格式为 YYYYMMDDTHHMMSSZ (例如 20250907T071354Z)
+
       - name: Collect and Upload Android ABI Split APKs
         uses: actions/upload-artifact@v4
         with:
-          # 使用 github.run_started_at 获取当前工作流运行的开始时间
-          # 并格式化为 ISO 8601 字符串，替换掉冒号
-          name: cherry-studio-app-apks-${{ format('{0:yyyyMMddTHHmmssZ}', github.run_started_at) }}
+          name: cherry-studio-app-apks-${{ env.ARTIFACT_TIMESTAMP }} # 从环境变量中获取
           path: ./android/app/build/outputs/apk/release/*.apk
+          retention-days: 7
+
