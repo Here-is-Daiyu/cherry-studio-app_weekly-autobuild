@@ -144,5 +144,5 @@ jobs:
         with:
           name: cherry-studio-app-apks-${{ env.ARTIFACT_TIMESTAMP }} # 从环境变量中获取
           path: ./android/app/build/outputs/apk/release/*.apk
-          retention-days: 7
+          retention-days: 28
 
