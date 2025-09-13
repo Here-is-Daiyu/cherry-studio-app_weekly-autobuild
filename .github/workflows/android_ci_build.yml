@@ -3,146 +3,127 @@ name: Android CI Build & Upstream Merge
 on:
   schedule:
     # 每周一凌晨2点触发（UTC时间）。你可以根据需要调整这个 cron 表达式。
-    # 例如：'0 2 * * MON' 表示每周一2点。
-    # '0 2 * * *' 表示每天2点。
-    - cron: '0 2 * * MON'
+    - cron: '0 0 * * MON'
   workflow_dispatch: # 允许手动从GitHub UI触发此工作流
+
+env:
+  NODE_VERSION: '18' # 统一管理Node.js版本
+  JAVA_VERSION: '17' # 统一管理Java版本
+  UPSTREAM_REPO: 'https://github.com/CherryHQ/cherry-studio-app.git' # 统一管理上游仓库URL
 
 jobs:
   merge_upstream:
     runs-on: ubuntu-latest
+    outputs:
+      merged_changes: ${{ steps.rebase_step.outputs.merged_status }} # 将 rebase_step 的输出作为 job 的输出
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
-          fetch-depth: 0 
+          fetch-depth: 0 # 获取完整历史，对rebase更稳健
 
-      - name: Set Git user
+      - name: Configure Git User
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-      - name: Add upstream remote
+      - name: Add/Update Upstream Remote
         run: |
-          # 确保如果remote已经存在，不会报错
-          git remote add upstream https://github.com/CherryHQ/cherry-studio-app.git || git remote set-url upstream https://github.com/CherryHQ/cherry-studio-app.git
+          # 确保如果remote已经存在，不会报错，而是更新其URL
+          git remote add upstream ${{ env.UPSTREAM_REPO }} || git remote set-url upstream ${{ env.UPSTREAM_REPO }}
 
-      - name: Fetch upstream
+      - name: Fetch Upstream Changes
         run: git fetch upstream
 
-      - name: Rebase upstream into main branch
-        id: merge_step
+      - name: Rebase Upstream into Main Branch
+        id: rebase_step # 步骤ID更具描述性
         run: |
           git checkout main
-          # 设置pull默认使用rebase策略，保持提交历史线性
-          git config pull.rebase true
+          git config pull.rebase true # 设置pull默认使用rebase策略
 
-          # 尝试从upstream/main拉取并rebase到本地main
-          # `|| { echo "::error::Rebase failed!"; exit 1; }` 用于在rebase失败时明确报错并停止步骤
           set +e # 临时禁用bash的errexit，以便我们可以检查git pull的返回值
-          git pull upstream main --autostash 
+          git pull upstream main --autostash
           PULL_STATUS=$?
           set -e # 重新启用errexit
 
           if [ $PULL_STATUS -eq 0 ]; then
             echo "Pull successful, checking if main branch was updated..."
-            # 比较当前HEAD和上游main分支的HEAD，如果不同，说明有新的提交被引入
-            # (注意：rebase之后，如果上游有新提交，即使内容没有改变，HEAD也会变)
             LOCAL_MAIN_SHA=$(git rev-parse HEAD)
             UPSTREAM_MAIN_SHA=$(git rev-parse upstream/main)
 
             if [ "$LOCAL_MAIN_SHA" != "$UPSTREAM_MAIN_SHA" ]; then
                 echo "Repository updated after rebase."
-                echo "::set-output name=merged::true"
+                echo "merged_status=true" >> $GITHUB_OUTPUT # 使用环境变量文件设置步骤输出
             else
                 echo "No new commits from upstream, or fast-forwarded without new content."
-                echo "::set-output name=merged::false"
+                echo "merged_status=false" >> $GITHUB_OUTPUT # 使用环境变量文件设置步骤输出
             fi
           else
             echo "##[error]Failed to pull and rebase upstream/main into main. Manual intervention may be required."
-            echo "::set-output name=merged::false"
+            echo "merged_status=false" >> $GITHUB_OUTPUT # 即使失败也要设置输出，以便后续步骤可以判断
             exit 1 # Rebase失败时直接终止任务
           fi
-        # continue-on-error: false # Rebase失败时通常不应该继续。
 
-      - name: Push merged changes to main (if merge was successful and there were changes)
-        if: steps.merge_step.outputs.merged == 'true'
+      - name: Push Rebased Changes to Main
+        if: steps.rebase_step.outputs.merged_status == 'true' # 只有当有实际合并发生时才推送
         run: |
-            # 使用 --force-with-lease 避免覆盖其他人的并行更新
-            git push origin main --force-with-lease
+            git push origin main --force-with-lease # 使用 --force-with-lease 避免覆盖其他人的并行更新
             echo "Successfully pushed rebased changes to main."
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        # 如果需要处理合并冲突，此部分需要更复杂的逻辑，例如创建PR而不是直接推送。
-        # 为了简单起见，这里假设合并通常不需要手动干预。
-        # 如果经常有冲突，考虑改为创建Pull Request的逻辑。
 
   build_android:
-    needs: merge_upstream
+    needs: merge_upstream # 确保在合并上游仓库之后才进行构建
     runs-on: ubuntu-latest
+    # 只有当 merge_upstream Job 成功且有实际合并发生时才运行此 Job
+    if: needs.merge_upstream.outputs.merged_changes == 'true'
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up Node.js
+      - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '18'
+          node-version: ${{ env.NODE_VERSION }} # 使用环境变量
 
       - name: Enable Corepack
         run: corepack enable
 
-      - name: Install dependencies
+      - name: Install JavaScript Dependencies
         run: yarn install
 
-      - name: Generate database
+      - name: Generate Database Schema
         run: npx drizzle-kit generate
 
       - name: Install Expo CLI
         run: npm install -g expo-cli
 
-      - name: Generate Android native project files # 这一步会生成 build.gradle
+      - name: Generate Android Native Project Files
         run: npx expo prebuild --platform android --no-install
-        # 如果需要，可以将 `--no-install` 移除，让prebuild自动安装原生依赖，但通常在CI中不需要
 
-
-      - name: Make script executable and run it # 新增步骤，或者合并
-        run: |
-          chmod +x ./scripts/add_abi_splits.sh
-          ./scripts/add_abi_splits.sh
-        working-directory: .
-        
-      - name: Set up Java
+      - name: Setup Java for Gradle
         uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
-          java-version: '17'
+          java-version: ${{ env.JAVA_VERSION }} # 使用环境变量
 
-      - name: Set up Gradle
+      - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v3
-        # Gradle的 setup-gradle action 可能会缓存 .gradle 文件夹，
-        # 如果 prebuild 导致某些gradle配置改变，可能需要注意缓存失效问题
-        # 通常这里不会有问题
 
-      - name: Build Android Release Apps for Multiple ABIs (using splits)
+      # 移除了 "Add Gradle Mirror Repositories (Optional)" 步骤，
+      # 因为它只是一个 echo 提示，没有实际操作，且建议在项目内配置。
+      # 如果需要，可以重新添加，但为了简洁，暂时移除。
+
+      - name: Build Android Release APK
         run: ./gradlew assembleRelease
         working-directory: ./android
 
-      - name: List generated APKs (Debug step)
-        run: ls -lh ./android/app/build/outputs/apk/release/
-
-      - name: Generate unique timestamp for artifact name
-        id: generate_timestamp # 添加一个 id 以便在后续步骤中引用
-        run: echo "ARTIFACT_TIMESTAMP=$(date -u +'%Y%m%dT%H%M%S%Z')" >> $GITHUB_ENV
-        # date -u 表示 UTC 时间
-        # %Y%m%dT%H%M%S%Z 格式为 YYYYMMDDTHHMMSSZ (例如 20250907T071354Z)
-
-      - name: Collect and Upload Android ABI Split APKs
+      - name: Upload Android Release Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: cherry-studio-app-apks-${{ env.ARTIFACT_TIMESTAMP }} # 从环境变量中获取
-          path: ./android/app/build/outputs/apk/release/*.apk
-          retention-days: 28
-
+          name: android-release-apk
+          path: ./android/app/build/outputs/apk/release/app-release.apk
+          retention-days: 42 # 根据需要调整
